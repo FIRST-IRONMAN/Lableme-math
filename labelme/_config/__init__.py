@@ -77,6 +77,17 @@ def _migrate_config_from_file(config_from_yaml: dict) -> None:
         logger.info("Migrating old config: store_data -> with_image_data")
         config_from_yaml["with_image_data"] = config_from_yaml.pop("store_data")
 
+    # Migrate v5.3.1 show_texts to v7 shape.show_descriptions
+    if "show_texts" in config_from_yaml:
+        old_value = config_from_yaml.pop("show_texts")
+        logger.info(
+            "Migrating old config: show_texts={} -> shape.show_descriptions", old_value
+        )
+        config_from_yaml.setdefault("shape", {})
+        shape_section = config_from_yaml["shape"]
+        if isinstance(shape_section, dict):
+            shape_section["show_descriptions"] = old_value
+
     # A malformed section (e.g. `shortcuts: oops`) is left untouched here so the
     # merge in _update_dict reports it as a config error instead of crashing.
     shortcuts = config_from_yaml.get("shortcuts")

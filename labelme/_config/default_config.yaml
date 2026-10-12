@@ -31,6 +31,7 @@ shape:
   hvertex_fill_color: [255, 255, 255, 255]
   point_size: 8
   show_labels: false
+  show_descriptions: false
 ai:
   default: Sam2 (balanced)
 # main
@@ -50,6 +51,16 @@ shape_dock:
   movable: true
   floatable: true
 file_dock:
+  show: true
+  closable: true
+  movable: true
+  floatable: true
+description_dock:
+  show: true
+  closable: true
+  movable: true
+  floatable: true
+latex_dock:
   show: true
   closable: true
   movable: true
@@ -118,3 +129,4 @@ shortcuts:
   show_all_shapes:
   hide_all_shapes:
   toggle_all_shapes: T
+  toggle_show_descriptions:

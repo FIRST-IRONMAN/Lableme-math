@@ -16,6 +16,7 @@ from .._shape import Shape
 from .._shape import get_rotation_handle
 from .._shape import nearest_edge_index
 from .._shape import oriented_rectangle_arrow_points
+from loguru import logger
 
 PEN_WIDTH: Final[int] = 2
 
@@ -76,6 +77,7 @@ class ShapeRenderContext:
     highlight: VertexHighlight | None
     rotation_highlight: VertexHighlight | None
     show_label: bool = False
+    show_description: bool = False
 
 
 def render_shape(
@@ -98,6 +100,9 @@ def render_shape(
 
     if context.show_label:
         _paint_shape_label(painter=painter, shape=shape, context=context)
+
+    if context.show_description and shape.description:
+        _paint_shape_description(painter=painter, shape=shape, context=context)
 
 
 def _paint_shape_label(
@@ -302,7 +307,13 @@ def _build_shape_points_paths(
     scale = context.scale
     points = shape.points
     if shape.shape_type in ["rectangle", "mask"]:
-        assert len(points) in [1, 2]
+        if len(points) not in (1, 2):
+            logger.warning(
+                "Unexpected point count for shape type '{}': got {}, expected 1-2",
+                shape.shape_type,
+                len(points),
+            )
+            return paths
         if len(points) == 2:
             paths.line.addRect(
                 QtCore.QRectF(
@@ -316,7 +327,13 @@ def _build_shape_points_paths(
                     path=paths.vertices, shape=shape, context=context, vertex_index=i
                 )
     elif shape.shape_type == "oriented_rectangle":
-        assert len(points) in [1, 2, 4]
+        if len(points) not in (1, 2, 4):
+            logger.warning(
+                "Unexpected point count for shape type 'oriented_rectangle': "
+                "got {}, expected 1, 2, or 4",
+                len(points),
+            )
+            return paths
         if len(points) == 4:
             paths.line.moveTo(QtCore.QPointF(*(points[0] * scale)))
             for i in range(len(points)):
@@ -343,7 +360,12 @@ def _build_shape_points_paths(
                     path=paths.vertices, shape=shape, context=context, vertex_index=i
                 )
     elif shape.shape_type == "circle":
-        assert len(points) in [1, 2]
+        if len(points) not in (1, 2):
+            logger.warning(
+                "Unexpected point count for shape type 'circle': got {}, expected 1-2",
+                len(points),
+            )
+            return paths
         if len(points) == 2:
             radius = float(np.linalg.norm((points[0] - points[1]) * scale))
             paths.line.addEllipse(QtCore.QPointF(*(points[0] * scale)), radius, radius)
@@ -438,3 +460,95 @@ def _build_image_path(*, shape: Shape) -> QtGui.QPainterPath:
             for p in points[1:]:
                 out.lineTo(QtCore.QPointF(*p))
     return out
+
+
+def _paint_shape_description(
+    *,
+    painter: QtGui.QPainter,
+    shape: Shape,
+    context: ShapeRenderContext,
+) -> None:
+    """Paint shape description text near the shape's bounding box.
+
+    Positions the text above the shape, shifting left/right/down if needed
+    to keep it within the image boundaries.
+    """
+    if not shape.description or len(shape.points) == 0:
+        return
+
+    scaled_points = shape.points * context.scale
+    min_xy = scaled_points.min(axis=0)
+    max_xy = scaled_points.max(axis=0)
+    rect_left = float(min_xy[0])
+    rect_top = float(min_xy[1])
+    rect_right = float(max_xy[0])
+    rect_bottom = float(max_xy[1])
+    rect_w = rect_right - rect_left
+    rect_h = rect_bottom - rect_top
+
+    if rect_w <= 0 or rect_h <= 0:
+        return
+
+    # Font size proportional to image scale so text stays in natural
+    # proportion to shapes across all image sizes and zoom levels.
+    # At scale=1.0 (image fits viewport), the target is ~14 px.
+    viewport = painter.viewport()
+    font_size = max(10, min(25, int(round(14.0 * context.scale))))
+    font = QtGui.QFont("Arial", font_size)
+    painter.setFont(font)
+
+    fm = QtGui.QFontMetrics(font)
+    text_rect = fm.tightBoundingRect(shape.description)
+    padding_x = 6
+    padding_y = 4
+    bg_w = text_rect.width() + 2 * padding_x
+    bg_h = text_rect.height() + 2 * padding_y
+
+    # Default: above the shape
+    x = rect_left
+    y = rect_top - bg_h - 2
+
+    # Estimate image dimensions from painter viewport for boundary clamping.
+    img_w = viewport.width()
+    img_h = viewport.height()
+
+    # If above is out of bounds, try left side
+    if y < 0:
+        gap = 1
+        x = rect_left - bg_w - gap
+        y = rect_top
+        if x < 0:
+            x = rect_right + gap
+            if x + bg_w > img_w:
+                x = rect_left
+                y = rect_bottom + gap
+
+    # Final boundary clamp
+    x = max(0.0, min(x, img_w - bg_w))
+    y = max(0.0, min(y, img_h - bg_h))
+
+    # Background color from shape's line color
+    bg_color = QtGui.QColor(context.palette.line)
+    bg_color.setAlpha(200)
+
+    # Auto-select white or black text based on background brightness
+    brightness = (
+        bg_color.red() * 0.299
+        + bg_color.green() * 0.587
+        + bg_color.blue() * 0.114
+    )
+    text_color = QtGui.QColor(0, 0, 0) if brightness > 128 else QtGui.QColor(255, 255, 255)
+
+    # Save/restore painter to avoid leaking brush to subsequent shapes.
+    painter.save()
+    try:
+        # Draw rounded rectangle background
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(x, y, bg_w, bg_h, 4, 4)
+
+        # Draw text centered
+        painter.setPen(text_color)
+        painter.drawText(QtCore.QRectF(x, y, bg_w, bg_h), QtCore.Qt.AlignCenter, shape.description)
+    finally:
+        painter.restore()

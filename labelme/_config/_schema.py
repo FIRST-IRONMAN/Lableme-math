@@ -120,4 +120,14 @@ SETTINGS: Final[tuple[Setting, ...]] = (
         kind="enum",
         choices=(None, "exact"),
     ),
+    Setting(
+        key_path=("shape", "show_descriptions"),
+        section="General",
+        label=cast(
+            str,
+            QT_TRANSLATE_NOOP("SettingsDialog", "Show shape descriptions on canvas"),
+        ),
+        kind="bool",
+        beta=True,
+    ),
 )

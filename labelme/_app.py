@@ -50,9 +50,12 @@ from ._widgets import AiAssistedAnnotationWidget
 from ._widgets import AiTextToAnnotationWidget
 from ._widgets import BrightnessContrastDialog
 from ._widgets import Canvas
+from ._widgets import DescriptionDockWidget
+from ._widgets import ExternalEditorAction
 from ._widgets import LabelDialog
 from ._widgets import LabelListWidget
 from ._widgets import LabelListWidgetItem
+from ._widgets import LatexDockWidget
 from ._widgets import Palette
 from ._widgets import SettingsDialog
 from ._widgets import StatusStats
@@ -78,6 +81,13 @@ _AI_CREATE_MODES: tuple[str, ...] = (
 )
 _AI_MODELS_WITHOUT_POINT_SUPPORT: tuple[str, ...] = ("sam3:latest",)
 
+_HERE = Path(__file__).resolve().parent
+
+
+def _widgets_dir() -> Path:
+    """Return the _widgets package directory path."""
+    return _HERE / "_widgets"
+
 
 class _StatusBarWidgets(NamedTuple):
     message: QtWidgets.QLabel
@@ -100,6 +110,8 @@ class _DockWidgets(NamedTuple):
     file_dock: QtWidgets.QDockWidget
     file_search: QtWidgets.QLineEdit
     file_list: QtWidgets.QListWidget
+    description_dock: DescriptionDockWidget
+    latex_dock: LatexDockWidget
 
 
 class _Actions(NamedTuple):
@@ -147,6 +159,7 @@ class _Actions(NamedTuple):
     hide_all: QtGui.QAction
     show_all: QtGui.QAction
     toggle_all: QtGui.QAction
+    toggle_show_descriptions: QtGui.QAction
     open_dir: QtGui.QAction
     zoom_widget_action: QtWidgets.QWidgetAction
     draw: list[tuple[str, QtGui.QAction]]
@@ -155,6 +168,7 @@ class _Actions(NamedTuple):
     on_shapes_present: tuple[QtGui.QAction, ...]
     context_menu: tuple[QtGui.QAction, ...]
     edit_menu: tuple[QtGui.QAction | None, ...]
+    external_editor_menu: tuple[QtGui.QAction, ...]
 
 
 class _Menus(NamedTuple):
@@ -163,6 +177,7 @@ class _Menus(NamedTuple):
     view: QtWidgets.QMenu
     help: QtWidgets.QMenu
     label_list: QtWidgets.QMenu
+    external_editor: QtWidgets.QMenu | None
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -184,6 +199,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _settings_dialog: SettingsDialog | None = None
     _ai_annotation: AiAssistedAnnotationWidget
     _ai_text: AiTextToAnnotationWidget
+    _external_editor: ExternalEditorAction | None
 
     _output_dir: Path | None
     _image: QtGui.QImage
@@ -221,6 +237,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.setAcceptDrops(True)
         self._canvas_widgets = self._setup_canvas()
+
+        self._external_editor = ExternalEditorAction()
 
         self._actions = self._setup_actions()
         self._shape_clipboard.availability_changed.connect(
@@ -666,6 +684,15 @@ class MainWindow(QtWidgets.QMainWindow):
             tip=self.tr("Toggle all shapes"),
             enabled=False,
         )
+        toggle_show_descriptions = action(
+            self.tr("Show &Descriptions"),
+            self._toggle_show_descriptions,
+            shortcuts.get("toggle_show_descriptions"),
+            checkable=True,
+            icon=None,
+            tip=self.tr("Toggle description text overlay on canvas"),
+            checked=self._config["shape"]["show_descriptions"],
+        )
 
         zoom_widget_action = QtWidgets.QWidgetAction(self)
         zoom_box_layout = QtWidgets.QVBoxLayout()
@@ -742,6 +769,15 @@ class MainWindow(QtWidgets.QMainWindow):
             add_point_to_edge,
             remove_point,
         )
+        external_editor_menu = (
+            action(
+                self.tr("Edit in Pinta"),
+                self._open_in_external_editor,
+                shortcut="Ctrl+Shift+E",
+                icon=None,
+                tip=self.tr("Open current image in external editor"),
+            ),
+        ) if self._external_editor and self._external_editor.is_available else ()
         edit_menu = (
             edit,
             duplicate,
@@ -801,6 +837,7 @@ class MainWindow(QtWidgets.QMainWindow):
             hide_all=hide_all,
             show_all=show_all,
             toggle_all=toggle_all,
+            toggle_show_descriptions=toggle_show_descriptions,
             open_dir=open_dir,
             zoom_widget_action=zoom_widget_action,
             draw=draw,
@@ -809,6 +846,7 @@ class MainWindow(QtWidgets.QMainWindow):
             on_shapes_present=on_shapes_present,
             context_menu=context_menu,
             edit_menu=edit_menu,
+            external_editor_menu=external_editor_menu,
         )
 
     def _setup_menus(self) -> _Menus:
@@ -884,6 +922,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._docks.label_dock.toggleViewAction(),
                 self._docks.shape_dock.toggleViewAction(),
                 self._docks.file_dock.toggleViewAction(),
+                self._docks.description_dock.toggleViewAction(),
+                self._docks.latex_dock.toggleViewAction(),
                 None,
                 self._actions.reset_layout,
                 None,
@@ -892,6 +932,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._actions.hide_all,
                 self._actions.show_all,
                 self._actions.toggle_all,
+                None,
+                self._actions.toggle_show_descriptions,
                 None,
                 self._actions.zoom_in,
                 self._actions.zoom_out,
@@ -924,6 +966,7 @@ class MainWindow(QtWidgets.QMainWindow):
             view=view_menu,
             help=help_menu,
             label_list=label_menu,
+            external_editor=None,  # added to edit_menu below
         )
 
     def _setup_toolbars(self) -> None:
@@ -1070,6 +1113,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         canvas.set_point_size(self._config["shape"]["point_size"])
         canvas.set_show_labels(self._config["shape"]["show_labels"])
+        canvas.set_show_descriptions(self._config["shape"]["show_descriptions"])
         canvas.set_draft_palette(
             Palette(
                 line=QtGui.QColor(*self._config["shape"]["line_color"]),
@@ -1182,11 +1226,22 @@ class MainWindow(QtWidgets.QMainWindow):
         file_list_container.setLayout(file_list_layout)
         file.setWidget(file_list_container)
 
+        # Description dock
+        description_dock = DescriptionDockWidget(self)
+        description_dock.descriptionChanged.connect(self._on_description_changed)
+
+        # LaTeX dock
+        katex_dir = _widgets_dir() / "katex"
+        latex_dock = LatexDockWidget(katex_dir, self)
+        latex_dock.latexEdited.connect(self._on_latex_edited)
+
         for config_key, dock_widget in [
             ("flag_dock", flag),
             ("label_dock", label),
             ("shape_dock", shape),
             ("file_dock", file),
+            ("description_dock", description_dock),
+            ("latex_dock", latex_dock),
         ]:
             features = QtWidgets.QDockWidget.DockWidgetFeature()
             if self._config[config_key]["closable"]:
@@ -1218,6 +1273,8 @@ class MainWindow(QtWidgets.QMainWindow):
             file_dock=file,
             file_search=file_search,
             file_list=file_list,
+            description_dock=description_dock,
+            latex_dock=latex_dock,
         )
 
     def _load_config(
@@ -1318,6 +1375,70 @@ class MainWindow(QtWidgets.QMainWindow):
             self._actions.delete_file.setEnabled(True)
         else:
             self._actions.delete_file.setEnabled(False)
+
+    def _toggle_show_descriptions(self) -> None:
+        checked = self._actions.toggle_show_descriptions.isChecked()
+        self._config["shape"]["show_descriptions"] = checked
+        self._canvas_widgets.canvas.set_show_descriptions(checked)
+        self._canvas_widgets.canvas.update()
+
+    def _open_in_external_editor(self) -> None:
+        if self._image_path and self._external_editor:
+            self._external_editor.open_image(self._image_path)
+
+    def _on_description_changed(self, new_text: str) -> None:
+        """Handle user editing of description text in the dock."""
+        self._apply_description_text(new_text)
+
+        # Update the first shape's description if shapes exist
+        shapes = self._canvas_widgets.canvas.shapes
+        if shapes:
+            shapes[0].description = new_text
+            self._canvas_widgets.canvas.update()
+
+    def _apply_description_text(self, text: str) -> None:
+        """Save description to .txt and refresh both docks."""
+        if not self._image_path:
+            return
+        base_name, _ext = self._image_path.rsplit(".", 1)
+        txt_filename = base_name + ".txt"
+        try:
+            with open(txt_filename, "w", encoding="utf-8") as f:
+                f.write(text)
+            self._docks.latex_dock.set_latex_text(text)
+            self._docks.description_dock.set_description_text(text)
+            self.mark_dirty()
+        except OSError as e:
+            logger.error("Failed to save description: {}", e)
+
+    def _on_latex_edited(self, new_text: str) -> None:
+        """Handle LaTeX editing: save to file and refresh both docks."""
+        self._apply_description_text(new_text)
+        shapes = self._canvas_widgets.canvas.shapes
+        if shapes:
+            shapes[0].description = new_text
+            self._canvas_widgets.canvas.update()
+
+    def _update_description_and_latex(self) -> None:
+        """Refresh description/latex docks for the current image."""
+        if self._image_path:
+            self._docks.description_dock.show_description(self._image_path)
+            self._docks.latex_dock.show_latex(self._image_path)
+
+    def _refresh_docks_from_first_shape(self) -> None:
+        """Sync description/LaTeX docks from the first shape's description."""
+        shapes = self._canvas_widgets.canvas.shapes
+        if shapes and shapes[0].description:
+            desc = shapes[0].description
+            self._docks.description_dock.set_description_text(desc)
+            self._docks.latex_dock.set_latex_text(desc)
+        else:
+            self._clear_description_and_latex()
+
+    def _clear_description_and_latex(self) -> None:
+        """Clear both description and LaTeX docks."""
+        self._docks.description_dock.set_description_text("")
+        self._docks.latex_dock.set_latex_text("")
 
     def update_action_states(self, value: bool = True) -> None:
         for action in (*self._actions.zoom, *self._actions.on_load_active):
@@ -1654,6 +1775,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     ),
                 )
 
+        if edit_description:
+            self._apply_description_text(description)
+
     def _on_file_search_changed(self) -> None:
         self._import_images_from_dir(
             root_dir=self._prev_opened_dir, pattern=self._docks.file_search.text()
@@ -1685,6 +1809,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._actions.duplicate.setEnabled(n_selected)
         self._actions.copy.setEnabled(n_selected)
         self._actions.edit.setEnabled(n_selected)
+
+        # Show description of the first selected shape; clear docks when
+        # the selected shape has no description.
+        if selected_shapes:
+            desc = selected_shapes[0].description or ""
+            self._docks.description_dock.set_description_text(desc)
+            self._docks.latex_dock.set_latex_text(desc)
 
     def add_label(self, shape: Shape) -> None:
         assert shape.label is not None
@@ -1914,6 +2045,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._actions.undo_last_point.setEnabled(False)
             self._actions.undo.setEnabled(True)
             self.mark_dirty()
+            if description:
+                self._apply_description_text(description)
         else:
             self._canvas_widgets.canvas.undo_last_line()
             self._canvas_widgets.canvas.shape_backups.pop()
@@ -2202,6 +2335,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.update_action_states(True)
         self._canvas_widgets.canvas.setFocus()
         self.show_status_message(self.tr("Loaded %s") % Path(image_or_label_path).name)
+        self._update_description_and_latex()
         logger.info(
             "Loaded file: {!r} in {:.0f}ms",
             image_or_label_path,
@@ -2505,6 +2639,10 @@ class MainWindow(QtWidgets.QMainWindow):
             canvas = self._canvas_widgets.canvas
             canvas.set_show_labels(self._config["shape"]["show_labels"])
             canvas.update()
+        elif key_path == ("shape", "show_descriptions"):
+            canvas = self._canvas_widgets.canvas
+            canvas.set_show_descriptions(self._config["shape"]["show_descriptions"])
+            canvas.update()
         elif key_path == ("canvas", "allow_out_of_bounds_points"):
             canvas = self._canvas_widgets.canvas
             canvas.set_allow_out_of_bounds_points(
@@ -2662,6 +2800,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.has_no_shapes():
                 for action in self._actions.on_shapes_present:
                     action.setEnabled(False)
+                self._clear_description_and_latex()
+            else:
+                self._refresh_docks_from_first_shape()
         self.mark_dirty()
 
     def delete_selected_shapes(self) -> None:
@@ -2675,6 +2816,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.has_no_shapes():
             for action in self._actions.on_shapes_present:
                 action.setEnabled(False)
+            self._clear_description_and_latex()
+        else:
+            self._refresh_docks_from_first_shape()
 
     def copy_shape(self) -> None:
         self._canvas_widgets.canvas.end_move(copy=True)

@@ -189,6 +189,8 @@ class Canvas(QtWidgets.QWidget):
 
     _show_labels = False
 
+    _show_descriptions = False
+
     _prev_point: QPointF
     _prev_move_point: QPointF
     _drag_anchor: tuple[QPointF, QRectF]
@@ -276,6 +278,9 @@ class Canvas(QtWidgets.QWidget):
     def set_show_labels(self, value: bool) -> None:
         self._show_labels = value
 
+    def set_show_descriptions(self, value: bool) -> None:
+        self._show_descriptions = value
+
     def set_allow_out_of_bounds_points(self, value: bool) -> None:
         self._allow_out_of_bounds_points = value
 
@@ -329,6 +334,7 @@ class Canvas(QtWidgets.QWidget):
             highlight=self._highlight if highlighted else None,
             rotation_highlight=self._rotation_highlight if highlighted else None,
             show_label=self._show_labels,
+            show_description=self._show_descriptions,
         )
 
     def _draft_render_context(
@@ -1507,6 +1513,7 @@ class Canvas(QtWidgets.QWidget):
                 highlight=None,
                 rotation_highlight=None,
                 show_label=self._show_labels,
+                show_description=self._show_descriptions,
             )
             render_shape(painter=painter, shape=copy_shape, context=context)
 
